@@ -16,12 +16,15 @@ import {
   PendingRequest,
   WebhookPayload,
   PriceContractResponse,
+  QuoteResponse,
   SyncResponse,
   HealthResponse,
   ReadinessResponse,
   DependencyHealth,
   AtRiskResponse,
 } from './types';
+import { QuoteCache } from './cache';
+import { NostrClient, calculateCommitHash, calculateCollateralRatio } from './nostr';
 import logger from './logger';
 import * as metrics from './metrics';
 
@@ -93,6 +96,8 @@ export interface AppState {
   config: GatewayConfig;
   pendingRequests: Map<string, PendingRequest>;
   startTime: Date;
+  quoteCache: QuoteCache;
+  nostrClient: NostrClient;
 }
 
 export function createAppState(config: GatewayConfig): AppState {
@@ -100,11 +105,20 @@ export function createAppState(config: GatewayConfig): AppState {
     config,
     pendingRequests: new Map(),
     startTime: new Date(),
+    quoteCache: new QuoteCache(),
+    nostrClient: new NostrClient(config.nostrRelayUrl, config.oraclePubkey),
   };
 }
 
 /**
  * GET /api/quote?th=PRICE - Create threshold commitment
+ *
+ * New flow:
+ * 1. Get cached price data from webhooks
+ * 2. Calculate commit_hash locally (d-tag)
+ * 3. Try local cache first
+ * 4. Try Nostr relay lookup
+ * 5. Fall back to CRE workflow if quote not found
  */
 export async function handleCreate(req: Request, res: Response, state: AppState): Promise<void> {
   try {
@@ -116,112 +130,203 @@ export async function handleCreate(req: Request, res: Response, state: AppState)
     }
 
     const { th } = parseResult.data;
+    const tholdPrice = Math.floor(th);
 
-    // Check capacity
-    if (state.pendingRequests.size >= state.config.maxPending) {
-      logger.warn('Max pending requests reached', {
-        current: state.pendingRequests.size,
-        max: state.config.maxPending,
-      });
-      res.status(503).json({ error: 'Server at capacity, please retry later' });
+    // Step 1: Get cached price data
+    const cachedPrice = state.quoteCache.getPrice();
+    if (!cachedPrice) {
+      logger.warn('No cached price data available, falling back to CRE');
+      await fallbackToCRE(req, res, state, th);
       return;
     }
 
-    // Generate domain with cryptographically random component to prevent prediction attacks
-    // An attacker who can predict domains could pre-send forged webhooks
-    // Use 16 chars of randomness (2^64 space) to prevent birthday attack collisions
-    const randomPart = generateRequestId().slice(0, 16);
-    const domain = `req-${Date.now()}-${randomPart}`;
-    const trackingKey = domain;
-
-    // Create promise for webhook result
-    let resolveWebhook: (payload: WebhookPayload) => void;
-    let rejectWebhook: (error: Error) => void;
-    const webhookPromise = new Promise<WebhookPayload>((resolve, reject) => {
-      resolveWebhook = resolve;
-      rejectWebhook = reject;
+    logger.debug('Using cached price', {
+      basePrice: cachedPrice.basePrice,
+      baseStamp: cachedPrice.baseStamp,
     });
 
-    // Register pending request
-    const pending: PendingRequest = {
-      requestId: trackingKey,
-      createdAt: new Date(),
-      resolve: resolveWebhook!,
-      reject: rejectWebhook!,
-      status: 'pending',
-    };
-    state.pendingRequests.set(trackingKey, pending);
-
-    // Update pending requests gauge
-    metrics.setPendingRequests(state.pendingRequests.size);
-
-    logger.info('CREATE request initiated', {
-      domain,
-      thresholdPrice: th,
-      trackingKey,
-      pendingCount: state.pendingRequests.size,
-    });
-
-    // Trigger CRE workflow
+    // Step 2: Calculate commit_hash locally (d-tag for Nostr lookup)
+    let commitHash: string;
     try {
-      await triggerWorkflow(state, 'create', domain, th, undefined, state.config.callbackUrl);
-      metrics.recordWorkflowTrigger('create', true);
+      commitHash = calculateCommitHash(
+        state.config.oraclePubkey,
+        state.config.chainNetwork,
+        cachedPrice.basePrice,
+        cachedPrice.baseStamp,
+        tholdPrice
+      );
     } catch (error) {
-      logger.error('Failed to trigger workflow', { domain, error: String(error) });
-      state.pendingRequests.delete(trackingKey);
-      metrics.setPendingRequests(state.pendingRequests.size);
-      metrics.recordWorkflowTrigger('create', false);
-      // SECURITY: Don't expose internal error details to clients
-      res.status(500).json({ error: 'Failed to trigger workflow' });
+      logger.error('Failed to calculate commit_hash', { error: String(error) });
+      res.status(500).json({ error: 'Internal server error' });
       return;
     }
 
-    // Wait for webhook or timeout
-    const timeoutPromise = new Promise<'timeout'>((resolve) =>
-      setTimeout(() => resolve('timeout'), state.config.blockTimeoutMs)
-    );
+    logger.debug('Calculated commit_hash', { commitHash, tholdPrice });
 
-    const result = await Promise.race([webhookPromise, timeoutPromise]);
-
-    if (result === 'timeout') {
-      logger.warn('CREATE request timeout', { domain, requestId: trackingKey });
-
-      const pendingReq = state.pendingRequests.get(trackingKey);
-      if (pendingReq) {
-        pendingReq.status = 'timeout';
-      }
-
-      metrics.recordRequestTimeout('create');
-
-      const response: SyncResponse = {
-        status: 'timeout',
-        request_id: trackingKey,
-        message: `Request is still processing. Use GET /status/${trackingKey} to check status.`,
-      };
-      res.status(202).json(response);
-    } else {
-      logger.info('CREATE request completed', {
-        domain,
-        eventId: truncateEventId(result.event_id),
-      });
-
-      const pendingReq = state.pendingRequests.get(trackingKey);
-      if (pendingReq) {
-        pendingReq.status = 'completed';
-        pendingReq.result = result;
-      }
-
-      // Parse and return PriceContract (using safe parser to prevent prototype pollution)
-      try {
-        const contract: PriceContractResponse = safeJsonParse(result.content);
-        res.json(contract);
-      } catch {
-        res.json({ raw: result.content });
-      }
+    // Step 3: Try local cache first
+    const cachedQuote = state.quoteCache.getQuote(commitHash);
+    if (cachedQuote) {
+      logger.info('Quote served from local cache', { commitHash });
+      const collateralRatio = calculateCollateralRatio(cachedPrice.basePrice, tholdPrice);
+      sendQuoteResponse(res, cachedQuote, collateralRatio);
+      return;
     }
+
+    // Step 4: Try Nostr relay lookup
+    try {
+      const nostrQuote = await state.nostrClient.fetchQuoteByDTag(commitHash);
+      if (nostrQuote) {
+        // Found in Nostr! Cache it and return
+        state.quoteCache.setQuote(commitHash, nostrQuote);
+        logger.info('Quote served from Nostr relay', { commitHash });
+        const collateralRatio = calculateCollateralRatio(cachedPrice.basePrice, tholdPrice);
+        sendQuoteResponse(res, nostrQuote, collateralRatio);
+        return;
+      }
+    } catch (error) {
+      logger.warn('Failed to fetch quote from Nostr relay', {
+        commitHash,
+        error: String(error),
+      });
+      // Fall through to CRE fallback
+    }
+
+    // Step 5: Fall back to CRE workflow
+    logger.info('Quote not found in cache or Nostr, falling back to CRE', { commitHash });
+    await fallbackToCRE(req, res, state, th);
   } catch (error) {
     logger.error('Error in handleCreate', { error: String(error) });
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Send QuoteResponse with collateral ratio
+ */
+function sendQuoteResponse(res: Response, quote: PriceContractResponse, collateralRatio: number): void {
+  const response: QuoteResponse = {
+    ...quote,
+    collateral_ratio: collateralRatio,
+  };
+  res.json(response);
+}
+
+/**
+ * Fall back to CRE workflow when quote not found in cache/Nostr
+ */
+async function fallbackToCRE(req: Request, res: Response, state: AppState, th: number): Promise<void> {
+  // Check capacity
+  if (state.pendingRequests.size >= state.config.maxPending) {
+    logger.warn('Max pending requests reached', {
+      current: state.pendingRequests.size,
+      max: state.config.maxPending,
+    });
+    res.status(503).json({ error: 'Server at capacity, please retry later' });
+    return;
+  }
+
+  // Generate domain with cryptographically random component to prevent prediction attacks
+  // An attacker who can predict domains could pre-send forged webhooks
+  // Use 16 chars of randomness (2^64 space) to prevent birthday attack collisions
+  const randomPart = generateRequestId().slice(0, 16);
+  const domain = `req-${Date.now()}-${randomPart}`;
+  const trackingKey = domain;
+
+  // Create promise for webhook result
+  let resolveWebhook: (payload: WebhookPayload) => void;
+  let rejectWebhook: (error: Error) => void;
+  const webhookPromise = new Promise<WebhookPayload>((resolve, reject) => {
+    resolveWebhook = resolve;
+    rejectWebhook = reject;
+  });
+
+  // Register pending request
+  const pending: PendingRequest = {
+    requestId: trackingKey,
+    createdAt: new Date(),
+    resolve: resolveWebhook!,
+    reject: rejectWebhook!,
+    status: 'pending',
+  };
+  state.pendingRequests.set(trackingKey, pending);
+
+  // Update pending requests gauge
+  metrics.setPendingRequests(state.pendingRequests.size);
+
+  logger.info('CRE fallback initiated', {
+    domain,
+    thresholdPrice: th,
+    trackingKey,
+    pendingCount: state.pendingRequests.size,
+  });
+
+  // Trigger CRE workflow
+  try {
+    await triggerWorkflow(state, 'create', domain, th, undefined, state.config.callbackUrl);
+    metrics.recordWorkflowTrigger('create', true);
+  } catch (error) {
+    logger.error('Failed to trigger workflow', { domain, error: String(error) });
+    state.pendingRequests.delete(trackingKey);
+    metrics.setPendingRequests(state.pendingRequests.size);
+    metrics.recordWorkflowTrigger('create', false);
+    // SECURITY: Don't expose internal error details to clients
+    res.status(500).json({ error: 'Failed to trigger workflow' });
+    return;
+  }
+
+  // Wait for webhook or timeout
+  const timeoutPromise = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), state.config.blockTimeoutMs)
+  );
+
+  const result = await Promise.race([webhookPromise, timeoutPromise]);
+
+  if (result === 'timeout') {
+    logger.warn('CRE fallback timeout', { domain, requestId: trackingKey });
+
+    const pendingReq = state.pendingRequests.get(trackingKey);
+    if (pendingReq) {
+      pendingReq.status = 'timeout';
+    }
+
+    metrics.recordRequestTimeout('create');
+
+    const response: SyncResponse = {
+      status: 'timeout',
+      request_id: trackingKey,
+      message: `Request is still processing. Use GET /status/${trackingKey} to check status.`,
+    };
+    res.status(202).json(response);
+  } else {
+    logger.info('CRE fallback completed', {
+      domain,
+      eventId: truncateEventId(result.event_id),
+    });
+
+    const pendingReq = state.pendingRequests.get(trackingKey);
+    if (pendingReq) {
+      pendingReq.status = 'completed';
+      pendingReq.result = result;
+    }
+
+    // Parse CRE response (using safe parser to prevent prototype pollution)
+    try {
+      const contract: PriceContractResponse = safeJsonParse(result.content);
+
+      // Calculate collateral ratio from response
+      const collateralRatio = calculateCollateralRatio(contract.base_price, contract.thold_price);
+
+      // Cache the quote for future requests
+      state.quoteCache.setQuote(contract.commit_hash, contract);
+
+      const response: QuoteResponse = {
+        ...contract,
+        collateral_ratio: collateralRatio,
+      };
+      res.json(response);
+    } catch {
+      res.json({ raw: result.content });
+    }
   }
 }
 
@@ -307,6 +412,10 @@ export async function handleWebhook(req: Request, res: Response, state: AppState
     // forged webhook to block the legitimate one
     markWebhookProcessed(payload.event_id);
 
+    // Cache price data from webhook for the new quote flow
+    // This allows handleCreate to serve quotes without calling CRE
+    cacheWebhookPrice(payload, state);
+
     // Extract domain from tags
     const domain = getTag(payload.tags, 'domain');
     if (!domain) {
@@ -341,6 +450,47 @@ export async function handleWebhook(req: Request, res: Response, state: AppState
   } catch (error) {
     logger.error('Error in handleWebhook', { error: String(error) });
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Cache price data from webhook for the new quote flow
+ */
+function cacheWebhookPrice(payload: WebhookPayload, state: AppState): void {
+  if (!payload.content) {
+    return;
+  }
+
+  try {
+    const priceContract: PriceContractResponse = JSON.parse(payload.content);
+
+    // Only cache if we have valid price data
+    if (priceContract.base_price <= 0 || priceContract.base_stamp <= 0) {
+      logger.debug('Invalid price data in webhook (ignoring)', {
+        basePrice: priceContract.base_price,
+        baseStamp: priceContract.base_stamp,
+      });
+      return;
+    }
+
+    // Update the price cache
+    state.quoteCache.setPrice(priceContract.base_price, priceContract.base_stamp);
+    logger.debug('Cached price from webhook', {
+      basePrice: priceContract.base_price,
+      baseStamp: priceContract.base_stamp,
+    });
+
+    // Also cache the full quote if we have a commit_hash
+    if (priceContract.commit_hash) {
+      state.quoteCache.setQuote(priceContract.commit_hash, priceContract);
+      logger.debug('Cached quote from webhook', {
+        commitHash: priceContract.commit_hash,
+      });
+    }
+  } catch (error) {
+    logger.debug('Could not parse webhook content as price contract (ignoring)', {
+      error: String(error),
+    });
   }
 }
 

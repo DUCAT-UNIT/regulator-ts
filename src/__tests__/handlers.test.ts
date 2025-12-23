@@ -71,6 +71,9 @@ const createMockConfig = (overrides: Partial<GatewayConfig> = {}): GatewayConfig
   liquidationEnabled: false,
   liquidationUrl: 'http://localhost:4001/liq/api/at-risk',
   liquidationIntervalMs: 1000,
+  nostrRelayUrl: 'https://relay.ducat.dev',
+  oraclePubkey: '0'.repeat(64),
+  chainNetwork: 'mutiny',
   ...overrides,
 });
 

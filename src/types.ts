@@ -53,6 +53,11 @@ export interface PriceContractResponse {
   thold_price: number;
 }
 
+// Quote response with collateral ratio for frontend
+export interface QuoteResponse extends PriceContractResponse {
+  collateral_ratio: number; // Collateral ratio as percentage (e.g., 135.0 for 135%)
+}
+
 // Create quote request (query params)
 export const createRequestSchema = z.object({
   th: z.coerce.number().positive('threshold price must be positive'),

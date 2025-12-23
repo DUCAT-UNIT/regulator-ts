@@ -219,11 +219,16 @@ async function main(): Promise<void> {
     port: config.port,
   });
 
-  // Initialize state
+  // Initialize state (using createAppState to include quoteCache and nostrClient)
+  const { QuoteCache } = await import('./cache');
+  const { NostrClient } = await import('./nostr');
+
   const state: AppState = {
     config,
     pendingRequests: new Map(),
     startTime: new Date(),
+    quoteCache: new QuoteCache(),
+    nostrClient: new NostrClient(config.nostrRelayUrl, config.oraclePubkey),
   };
 
   // Set max pending gauge

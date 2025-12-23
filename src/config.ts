@@ -16,6 +16,10 @@ const configSchema = z.object({
   liquidationIntervalMs: z.number().positive(),
   liquidationEnabled: z.boolean(),
   port: z.number().positive(),
+  // Nostr relay configuration for quote lookup
+  nostrRelayUrl: z.string(),
+  oraclePubkey: z.string().length(64),
+  chainNetwork: z.string().min(1),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;
@@ -71,6 +75,20 @@ export function loadConfig(): GatewayConfig {
 
   const port = parseInt(process.env.PORT || '8080', 10);
 
+  // Nostr relay configuration
+  const nostrRelayUrl = process.env.NOSTR_RELAY_URL || 'https://relay.ducat.dev';
+
+  let oraclePubkey = process.env.ORACLE_PUBKEY;
+  if (!oraclePubkey) {
+    // Use test default for development
+    oraclePubkey = '0000000000000000000000000000000000000000000000000000000000000000';
+    if (process.env.NODE_ENV !== 'test') {
+      console.warn('ORACLE_PUBKEY not set - using test default');
+    }
+  }
+
+  const chainNetwork = process.env.CHAIN_NETWORK || 'mutiny';
+
   const config = {
     workflowId,
     gatewayUrl,
@@ -87,6 +105,9 @@ export function loadConfig(): GatewayConfig {
     liquidationIntervalMs,
     liquidationEnabled,
     port,
+    nostrRelayUrl,
+    oraclePubkey,
+    chainNetwork,
   };
 
   return configSchema.parse(config);
