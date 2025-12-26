@@ -51,21 +51,39 @@ The Regulator is the **orchestrator** - it runs the cron jobs that drive the liq
 | `GET /readiness` | GET | Readiness probe | Kubernetes |
 | `GET /metrics` | GET | Prometheus metrics | Prometheus |
 
-### Type Schema (v2.5)
+### Type Schema (v2.5 PriceQuote)
 
 ```typescript
-interface PriceQuoteResponse {
-  quote_price: number;   // float64 - BTC/USD at quote creation
-  quote_stamp: number;   // int64 - Unix timestamp
-  oracle_pk: string;     // Oracle public key (hex)
-  req_id: string;        // Request ID hash
-  req_sig: string;       // Schnorr signature
-  thold_hash: string;    // Hash160 commitment (20 bytes hex)
-  thold_price: number;   // float64 - Threshold price
-  is_expired: boolean;   // True if breached
-  eval_price: number | null;  // Price at breach (null if active)
-  eval_stamp: number | null;  // Timestamp at breach (null if active)
-  thold_key: string | null;   // Secret key (null until breached)
+interface PriceQuote {
+  // Server identity
+  srv_network: string;     // "main" | "test"
+  srv_pubkey: string;      // Oracle public key (hex)
+
+  // Quote price (at commitment creation)
+  quote_origin: string;    // "link" | "nostr" | "cre"
+  quote_price: number;     // BTC/USD price
+  quote_stamp: number;     // Unix timestamp
+
+  // Latest price (most recent observation)
+  latest_origin: string;
+  latest_price: number;
+  latest_stamp: number;
+
+  // Event price (at breach, if any)
+  event_origin: string | null;
+  event_price: number | null;
+  event_stamp: number | null;
+  event_type: string;      // "active" | "breach"
+
+  // Threshold commitment
+  thold_hash: string;      // Hash160 (20 bytes hex)
+  thold_key: string | null; // Revealed on breach
+  thold_price: number;
+
+  // State & signatures
+  is_expired: boolean;
+  req_id: string;          // Request ID hash
+  req_sig: string;         // Schnorr signature
 }
 ```
 
