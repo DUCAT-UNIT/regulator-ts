@@ -1,4 +1,4 @@
-import { PriceContractResponse } from './types';
+import { PriceContract } from './types';
 
 /** Cached price data from webhook */
 export interface CachedPrice {
@@ -9,7 +9,7 @@ export interface CachedPrice {
 
 /** Cached quote with expiration */
 interface CachedQuote {
-  quote: PriceContractResponse;
+  quote: PriceContract;
   cachedAt: Date;
   expiresAt: Date;
 }
@@ -52,7 +52,7 @@ export class QuoteCache {
   }
 
   /** Store a quote by commit_hash */
-  setQuote(commitHash: string, quote: PriceContractResponse): void {
+  setQuote(commitHash: string, quote: PriceContract): void {
     // Enforce max size - remove oldest entry if at capacity
     if (this.quotes.size >= this.maxQuotes) {
       let oldestKey: string | null = null;
@@ -79,7 +79,7 @@ export class QuoteCache {
   }
 
   /** Get quote by commit_hash, returns null if not found or expired */
-  getQuote(commitHash: string): PriceContractResponse | null {
+  getQuote(commitHash: string): PriceContract | null {
     const cached = this.quotes.get(commitHash);
     if (!cached) {
       return null;

@@ -15,14 +15,13 @@ import {
   webhookPayloadSchema,
   PendingRequest,
   WebhookPayload,
-  PriceContractResponse,
+  PriceContract,
   QuoteResponse,
   SyncResponse,
   HealthResponse,
   ReadinessResponse,
   DependencyHealth,
   AtRiskResponse,
-  toV3Quote,
 } from './types';
 import { QuoteCache } from './cache';
 import { NostrClient, calculateCommitHash, calculateCollateralRatio } from './nostr';
@@ -204,11 +203,9 @@ export async function handleCreate(req: Request, res: Response, state: AppState)
 /**
  * Send QuoteResponse with collateral ratio
  */
-function sendQuoteResponse(res: Response, quote: PriceContractResponse, collateralRatio: number): void {
-  // Convert internal CRE format to v3 protocol-sdk format
-  const v3Quote = toV3Quote(quote);
+function sendQuoteResponse(res: Response, quote: PriceContract, collateralRatio: number): void {
   const response: QuoteResponse = {
-    ...v3Quote,
+    ...quote,
     collateral_ratio: collateralRatio,
   };
   res.json(response);
@@ -314,7 +311,7 @@ async function fallbackToCRE(req: Request, res: Response, state: AppState, th: n
 
     // Parse CRE response (using safe parser to prevent prototype pollution)
     try {
-      const contract: PriceContractResponse = safeJsonParse(result.content);
+      const contract: PriceContract = safeJsonParse(result.content);
 
       // Calculate collateral ratio from response
       const collateralRatio = calculateCollateralRatio(contract.base_price, contract.thold_price);
@@ -465,7 +462,7 @@ function cacheWebhookPrice(payload: WebhookPayload, state: AppState): void {
   }
 
   try {
-    const priceContract: PriceContractResponse = JSON.parse(payload.content);
+    const priceContract: PriceContract = JSON.parse(payload.content);
 
     // Only cache if we have valid price data
     if (priceContract.base_price <= 0 || priceContract.base_stamp <= 0) {
@@ -591,7 +588,7 @@ export async function handleCheck(req: Request, res: Response, state: AppState):
 
       // Using safe parser to prevent prototype pollution
       try {
-        const contract: PriceContractResponse = safeJsonParse(result.content);
+        const contract: PriceContract = safeJsonParse(result.content);
         res.json(contract);
       } catch {
         res.json({ raw: result.content });
@@ -623,7 +620,7 @@ export function handleStatus(req: Request, res: Response, state: AppState): void
   if (pending.status === 'completed' && pending.result) {
     // Using safe parser to prevent prototype pollution
     try {
-      const contract: PriceContractResponse = safeJsonParse(pending.result.content);
+      const contract: PriceContract = safeJsonParse(pending.result.content);
       res.json(contract);
       return;
     } catch {

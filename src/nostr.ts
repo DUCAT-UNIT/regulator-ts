@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { PriceContractResponse } from './types';
+import { PriceContract } from './types';
 import logger from './logger';
 
 /** Nostr event from relay */
@@ -27,7 +27,7 @@ export class NostrClient {
    * Fetch quote from Nostr relay by d-tag (commit_hash)
    * Uses NIP-33 addressable events (kind:30078)
    */
-  async fetchQuoteByDTag(dtag: string): Promise<PriceContractResponse | null> {
+  async fetchQuoteByDTag(dtag: string): Promise<PriceContract | null> {
     const url = `${this.relayUrl}/nostr/addressable?pubkey=${encodeURIComponent(this.oraclePubkey)}&kind=30078&d=${encodeURIComponent(dtag)}`;
 
     logger.debug('Fetching quote from Nostr', { url, dtag });
@@ -61,8 +61,8 @@ export class NostrClient {
         event = data as NostrEvent;
       }
 
-      // Parse content as PriceContractResponse
-      const quote: PriceContractResponse = JSON.parse(event.content);
+      // Parse content as PriceContract
+      const quote: PriceContract = JSON.parse(event.content);
 
       logger.debug('Quote fetched from Nostr', { dtag, commitHash: quote.commit_hash });
 
