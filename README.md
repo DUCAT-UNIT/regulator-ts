@@ -10,6 +10,66 @@ TypeScript implementation featuring:
 - **Structured Logging**: Winston with JSON format support
 - **Easy Deployment**: Node.js ecosystem compatibility
 
+## System Integration
+
+The Regulator is the **orchestrator** - it runs the cron jobs that drive the liquidation system.
+
+### Role in System
+
+```
+┌─────────────┐                      ┌─────────────┐
+│   Client    │ ◄──────────────────► │  Regulator  │
+│   (SDK)     │    REST API          │  (Gateway)  │
+└─────────────┘                      └──────┬──────┘
+                                            │
+                    ┌───────────────────────┼───────────────────────┐
+                    │                       │                       │
+                    ▼                       ▼                       ▼
+            ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+            │     CRE     │         │ Nostr Relay │         │   Indexer   │
+            │   (WASM)    │         │             │         │ (at-risk)   │
+            └─────────────┘         └─────────────┘         └─────────────┘
+```
+
+### Background Jobs
+
+| Job | Frequency | Action |
+|-----|-----------|--------|
+| **Liquidation Poller** | Every 90s | Poll indexer `/at-risk`, trigger CRE CHECK for each |
+| **Cleanup Job** | Every 2min | Remove stale pending requests |
+
+### Endpoints
+
+| Endpoint | Method | Purpose | Called By |
+|----------|--------|---------|-----------|
+| `GET /api/quote?th=PRICE` | GET | Create threshold commitment | Client SDK |
+| `POST /webhook/ducat` | POST | Receive CRE callback | CRE |
+| `POST /check` | POST | Check if threshold breached | Internal (liquidation) |
+| `GET /status/:id` | GET | Poll async request status | Client SDK |
+| `GET /health` | GET | Liveness probe | Kubernetes |
+| `GET /readiness` | GET | Readiness probe | Kubernetes |
+| `GET /metrics` | GET | Prometheus metrics | Prometheus |
+
+### Type Schema (v2.5)
+
+```typescript
+interface PriceQuoteResponse {
+  quote_price: number;   // float64 - BTC/USD at quote creation
+  quote_stamp: number;   // int64 - Unix timestamp
+  oracle_pk: string;     // Oracle public key (hex)
+  req_id: string;        // Request ID hash
+  req_sig: string;       // Schnorr signature
+  thold_hash: string;    // Hash160 commitment (20 bytes hex)
+  thold_price: number;   // float64 - Threshold price
+  is_expired: boolean;   // True if breached
+  eval_price: number | null;  // Price at breach (null if active)
+  eval_stamp: number | null;  // Timestamp at breach (null if active)
+  thold_key: string | null;   // Secret key (null until breached)
+}
+```
+
+**Note**: All prices are `number` (float64) to match cre-hmac HMAC computation.
+
 ## Security Features
 
 - **BIP-340 Schnorr Signature Verification**: Uses `@noble/curves` library
@@ -123,6 +183,98 @@ npm run dev  # With hot reload
 npm test
 ```
 
+## Architecture
+
+### Quote Flow
+
+The gateway uses a tiered resolution strategy for quote requests:
+
+```
+GET /api/quote?th=95000
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Quote Resolution                      │
+│                                                         │
+│  1. Calculate commit_hash locally                       │
+│     commit_hash = hash340("DUCAT/commit",               │
+│       oracle_pubkey || chain_network ||                 │
+│       base_price || base_stamp || thold_price)          │
+│                                                         │
+│  2. Check local cache (5-min TTL)                       │
+│     └── If found → return with collateral_ratio         │
+│                                                         │
+│  3. Query Nostr relay by d-tag (commit_hash)            │
+│     GET /api/quotes?d=<commit_hash>                     │
+│     └── If found → cache + return with collateral_ratio │
+│                                                         │
+│  4. Fallback to CRE (trigger workflow)                  │
+│     └── Wait for webhook → return response              │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Request Flow
+
+```
+Client Request
+     │
+     ▼
+┌─────────────────┐
+│  Rate Limiter   │ ← Per-IP token bucket
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐         ┌─────────────────┐
+│ Request Handler │────────▶│   Quote Cache   │
+└────────┬────────┘         │  (5-min TTL)    │
+         │                  └────────┬────────┘
+         │                           │
+         │ (cache miss)              │
+         ▼                           │
+┌─────────────────┐                  │
+│  Nostr Client   │────────────────▶ │
+│  (HTTP fetch)   │ (cache on hit)   │
+└────────┬────────┘                  │
+         │                           │
+         │ (not found)               │
+         ▼                           │
+┌─────────────────┐                  │
+│ Circuit Breaker │                  │
+└────────┬────────┘                  │
+         │                           │
+         ▼                           │
+┌─────────────────┐    ┌─────────────────┐
+│  CRE Gateway    │───▶│ Pending Request │
+└────────┬────────┘    │     Registry    │
+         │             └────────┬────────┘
+         ▼                      │
+┌─────────────────┐             │
+│ Webhook Handler │ ◄───────────┘
+│ (Signature      │
+│  Verification)  │
+└─────────────────┘
+```
+
+### Response Format
+
+Quote responses now include `collateral_ratio`:
+
+```json
+{
+  "chain_network": "mutinynet",
+  "oracle_pubkey": "...",
+  "base_price": 100000,
+  "base_stamp": 1703289600,
+  "commit_hash": "...",
+  "contract_id": "...",
+  "oracle_sig": "...",
+  "thold_hash": "...",
+  "thold_key": null,
+  "thold_price": 135000,
+  "collateral_ratio": 135.0
+}
+```
+
 ## Project Structure
 
 ```
@@ -133,6 +285,8 @@ gateway-ts/
     ├── index.ts      # Server setup, middleware
     ├── config.ts     # Configuration with Zod validation
     ├── handlers.ts   # HTTP request handlers
+    ├── cache.ts      # Quote and price caching
+    ├── nostr.ts      # Nostr relay client
     ├── crypto.ts     # Cryptographic operations
     └── __tests__/    # Jest test files
 ```
