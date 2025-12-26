@@ -39,7 +39,7 @@ export const webhookPayloadSchema = z.object({
 
 export type WebhookPayload = z.infer<typeof webhookPayloadSchema>;
 
-// Price contract response matching core-ts schema
+// Price contract response - internal CRE format
 export interface PriceContractResponse {
   chain_network: string;
   oracle_pubkey: string;
@@ -53,8 +53,41 @@ export interface PriceContractResponse {
   thold_price: number;
 }
 
-// Quote response with collateral ratio for frontend
-export interface QuoteResponse extends PriceContractResponse {
+// v2.5 Price quote response matching client-sdk main branch schema
+export interface PriceQuoteResponse {
+  quote_price: number;
+  quote_stamp: number;
+  oracle_pk: string;
+  req_id: string;
+  req_sig: string;
+  thold_hash: string;
+  thold_price: number;
+  is_expired: boolean;
+  eval_price: number | null;
+  eval_stamp: number | null;
+  thold_key: string | null;
+}
+
+// Convert internal format to v2.5 client-sdk format
+export function toV25Quote(contract: PriceContractResponse): PriceQuoteResponse {
+  const isExpired = contract.thold_key !== null;
+  return {
+    quote_price: contract.base_price,
+    quote_stamp: contract.base_stamp,
+    oracle_pk: contract.oracle_pubkey,
+    req_id: contract.commit_hash,
+    req_sig: contract.oracle_sig,
+    thold_hash: contract.thold_hash,
+    thold_price: contract.thold_price,
+    is_expired: isExpired,
+    eval_price: isExpired ? contract.base_price : null,
+    eval_stamp: isExpired ? contract.base_stamp : null,
+    thold_key: contract.thold_key,
+  };
+}
+
+// Quote response with collateral ratio for frontend - v2.5 format
+export interface QuoteResponse extends PriceQuoteResponse {
   collateral_ratio: number; // Collateral ratio as percentage (e.g., 135.0 for 135%)
 }
 

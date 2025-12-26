@@ -22,6 +22,7 @@ import {
   ReadinessResponse,
   DependencyHealth,
   AtRiskResponse,
+  toV25Quote,
 } from './types';
 import { QuoteCache } from './cache';
 import { NostrClient, calculateCommitHash, calculateCollateralRatio } from './nostr';
@@ -201,11 +202,12 @@ export async function handleCreate(req: Request, res: Response, state: AppState)
 }
 
 /**
- * Send QuoteResponse with collateral ratio
+ * Send QuoteResponse with collateral ratio (v2.5 format)
  */
 function sendQuoteResponse(res: Response, quote: PriceContractResponse, collateralRatio: number): void {
+  const v25Quote = toV25Quote(quote);
   const response: QuoteResponse = {
-    ...quote,
+    ...v25Quote,
     collateral_ratio: collateralRatio,
   };
   res.json(response);
@@ -319,11 +321,8 @@ async function fallbackToCRE(req: Request, res: Response, state: AppState, th: n
       // Cache the quote for future requests
       state.quoteCache.setQuote(contract.commit_hash, contract);
 
-      const response: QuoteResponse = {
-        ...contract,
-        collateral_ratio: collateralRatio,
-      };
-      res.json(response);
+      // Convert to v2.5 format before sending to client
+      sendQuoteResponse(res, contract, collateralRatio);
     } catch {
       res.json({ raw: result.content });
     }
