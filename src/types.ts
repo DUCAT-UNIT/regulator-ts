@@ -54,6 +54,7 @@ export interface PriceContractResponse {
 }
 
 // v2.5 Price quote response matching client-sdk main branch schema
+// NOTE: Prices are number (float64) to match cre-hmac which uses float64 for HMAC computation
 export interface PriceQuoteResponse {
   quote_price: number;
   quote_stamp: number;
