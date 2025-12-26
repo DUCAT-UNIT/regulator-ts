@@ -10,6 +10,66 @@ TypeScript implementation featuring:
 - **Structured Logging**: Winston with JSON format support
 - **Easy Deployment**: Node.js ecosystem compatibility
 
+## System Integration
+
+The Regulator is the **orchestrator** - it runs the cron jobs that drive the liquidation system.
+
+### Role in System
+
+```
+┌─────────────┐                      ┌─────────────┐
+│   Client    │ ◄──────────────────► │  Regulator  │
+│   (SDK)     │    REST API          │  (Gateway)  │
+└─────────────┘                      └──────┬──────┘
+                                            │
+                    ┌───────────────────────┼───────────────────────┐
+                    │                       │                       │
+                    ▼                       ▼                       ▼
+            ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+            │     CRE     │         │ Nostr Relay │         │   Indexer   │
+            │   (WASM)    │         │             │         │ (at-risk)   │
+            └─────────────┘         └─────────────┘         └─────────────┘
+```
+
+### Background Jobs
+
+| Job | Frequency | Action |
+|-----|-----------|--------|
+| **Liquidation Poller** | Every 90s | Poll indexer `/at-risk`, trigger CRE CHECK for each |
+| **Cleanup Job** | Every 2min | Remove stale pending requests |
+
+### Endpoints
+
+| Endpoint | Method | Purpose | Called By |
+|----------|--------|---------|-----------|
+| `GET /api/quote?th=PRICE` | GET | Create threshold commitment | Client SDK |
+| `POST /webhook/ducat` | POST | Receive CRE callback | CRE |
+| `POST /check` | POST | Check if threshold breached | Internal (liquidation) |
+| `GET /status/:id` | GET | Poll async request status | Client SDK |
+| `GET /health` | GET | Liveness probe | Kubernetes |
+| `GET /readiness` | GET | Readiness probe | Kubernetes |
+| `GET /metrics` | GET | Prometheus metrics | Prometheus |
+
+### Type Schema (v2.5)
+
+```typescript
+interface PriceQuoteResponse {
+  quote_price: number;   // float64 - BTC/USD at quote creation
+  quote_stamp: number;   // int64 - Unix timestamp
+  oracle_pk: string;     // Oracle public key (hex)
+  req_id: string;        // Request ID hash
+  req_sig: string;       // Schnorr signature
+  thold_hash: string;    // Hash160 commitment (20 bytes hex)
+  thold_price: number;   // float64 - Threshold price
+  is_expired: boolean;   // True if breached
+  eval_price: number | null;  // Price at breach (null if active)
+  eval_stamp: number | null;  // Timestamp at breach (null if active)
+  thold_key: string | null;   // Secret key (null until breached)
+}
+```
+
+**Note**: All prices are `number` (float64) to match cre-hmac HMAC computation.
+
 ## Security Features
 
 - **BIP-340 Schnorr Signature Verification**: Uses `@noble/curves` library
