@@ -39,7 +39,8 @@ export const webhookPayloadSchema = z.object({
 
 export type WebhookPayload = z.infer<typeof webhookPayloadSchema>;
 
-// PriceQuote matches Rust protocol-sdk v3 schema (ducat-protocol/src/oracle.rs)
+// PriceQuote matches cre-hmac v3 PriceEvent schema
+// NOTE: Prices are float64 (number) to match cre-hmac which uses float64 for HMAC computation
 export interface PriceQuote {
   // Server identity
   srv_network: string;
@@ -55,11 +56,11 @@ export interface PriceQuote {
   latest_price: number;
   latest_stamp: number;
 
-  // Event/breach data (optional)
+  // Event/breach data (optional - null if not breached)
   event_origin?: string | null;
   event_price?: number | null;
   event_stamp?: number | null;
-  event_type?: string | null;
+  event_type: string; // "active" or "breach" - always present
 
   // Threshold commitment
   thold_hash: string;
@@ -68,8 +69,8 @@ export interface PriceQuote {
   is_expired: boolean;
 
   // Request identification
-  req_id?: string | null;
-  req_sig?: string | null;
+  req_id: string;
+  req_sig: string;
 }
 
 // Price contract response - internal CRE format
@@ -101,7 +102,7 @@ export function toV3Quote(contract: PriceContractResponse): PriceQuote {
     event_origin: isExpired ? 'cre' : null,
     event_price: isExpired ? contract.base_price : null,
     event_stamp: isExpired ? contract.base_stamp : null,
-    event_type: isExpired ? 'breach' : null,
+    event_type: isExpired ? 'breach' : 'active',
     thold_hash: contract.thold_hash,
     thold_price: contract.thold_price,
     thold_key: contract.thold_key,
