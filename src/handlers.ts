@@ -22,6 +22,7 @@ import {
   ReadinessResponse,
   DependencyHealth,
   AtRiskResponse,
+  toV3Quote,
 } from './types';
 import { QuoteCache } from './cache';
 import { NostrClient, calculateCommitHash, calculateCollateralRatio } from './nostr';
@@ -204,8 +205,10 @@ export async function handleCreate(req: Request, res: Response, state: AppState)
  * Send QuoteResponse with collateral ratio
  */
 function sendQuoteResponse(res: Response, quote: PriceContractResponse, collateralRatio: number): void {
+  // Convert internal CRE format to v3 protocol-sdk format
+  const v3Quote = toV3Quote(quote);
   const response: QuoteResponse = {
-    ...quote,
+    ...v3Quote,
     collateral_ratio: collateralRatio,
   };
   res.json(response);

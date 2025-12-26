@@ -39,7 +39,40 @@ export const webhookPayloadSchema = z.object({
 
 export type WebhookPayload = z.infer<typeof webhookPayloadSchema>;
 
-// Price contract response matching core-ts schema
+// PriceQuote matches Rust protocol-sdk v3 schema (ducat-protocol/src/oracle.rs)
+export interface PriceQuote {
+  // Server identity
+  srv_network: string;
+  srv_pubkey: string;
+
+  // Quote creation data
+  quote_origin: string;
+  quote_price: number;
+  quote_stamp: number;
+
+  // Latest price data
+  latest_origin: string;
+  latest_price: number;
+  latest_stamp: number;
+
+  // Event/breach data (optional)
+  event_origin?: string | null;
+  event_price?: number | null;
+  event_stamp?: number | null;
+  event_type?: string | null;
+
+  // Threshold commitment
+  thold_hash: string;
+  thold_price: number;
+  thold_key?: string | null;
+  is_expired: boolean;
+
+  // Request identification
+  req_id?: string | null;
+  req_sig?: string | null;
+}
+
+// Price contract response - internal CRE format
 export interface PriceContractResponse {
   chain_network: string;
   oracle_pubkey: string;
@@ -53,8 +86,33 @@ export interface PriceContractResponse {
   thold_price: number;
 }
 
-// Quote response with collateral ratio for frontend
-export interface QuoteResponse extends PriceContractResponse {
+// Convert internal CRE format to v3 protocol-sdk format
+export function toV3Quote(contract: PriceContractResponse): PriceQuote {
+  const isExpired = contract.thold_key !== null;
+  return {
+    srv_network: contract.chain_network,
+    srv_pubkey: contract.oracle_pubkey,
+    quote_origin: 'cre',
+    quote_price: contract.base_price,
+    quote_stamp: contract.base_stamp,
+    latest_origin: 'cre',
+    latest_price: contract.base_price,
+    latest_stamp: contract.base_stamp,
+    event_origin: isExpired ? 'cre' : null,
+    event_price: isExpired ? contract.base_price : null,
+    event_stamp: isExpired ? contract.base_stamp : null,
+    event_type: isExpired ? 'breach' : null,
+    thold_hash: contract.thold_hash,
+    thold_price: contract.thold_price,
+    thold_key: contract.thold_key,
+    is_expired: isExpired,
+    req_id: contract.commit_hash,
+    req_sig: contract.oracle_sig,
+  };
+}
+
+// Quote response with collateral ratio - v3 format
+export interface QuoteResponse extends PriceQuote {
   collateral_ratio: number; // Collateral ratio as percentage (e.g., 135.0 for 135%)
 }
 
