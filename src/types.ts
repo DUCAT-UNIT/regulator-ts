@@ -56,34 +56,66 @@ export interface PriceContractResponse {
 // v2.5 Price quote response matching client-sdk main branch schema
 // NOTE: Prices are number (float64) to match cre-hmac which uses float64 for HMAC computation
 export interface PriceQuoteResponse {
-  quote_price: number;
-  quote_stamp: number;
-  oracle_pk: string;
+  // Server identity
+  srv_network: string;   // "main" | "test"
+  srv_pubkey: string;    // Oracle public key (hex)
+
+  // Quote price (at commitment creation)
+  quote_origin: string;  // "link" | "nostr" | "cre"
+  quote_price: number;   // BTC/USD price
+  quote_stamp: number;   // Unix timestamp
+
+  // Latest price (most recent observation)
+  latest_origin: string;
+  latest_price: number;
+  latest_stamp: number;
+
+  // Event price (at breach, if any)
+  event_origin: string | null;
+  event_price: number | null;
+  event_stamp: number | null;
+  event_type: string;    // "active" | "breach"
+
+  // Threshold commitment
+  thold_hash: string;
+  thold_key: string | null;
+  thold_price: number;
+
+  // State & signatures
+  is_expired: boolean;
   req_id: string;
   req_sig: string;
-  thold_hash: string;
-  thold_price: number;
-  is_expired: boolean;
-  eval_price: number | null;
-  eval_stamp: number | null;
-  thold_key: string | null;
 }
 
 // Convert internal format to v2.5 client-sdk format
 export function toV25Quote(contract: PriceContractResponse): PriceQuoteResponse {
   const isExpired = contract.thold_key !== null;
+  const origin = 'cre';
   return {
+    // Server identity
+    srv_network: contract.chain_network,
+    srv_pubkey: contract.oracle_pubkey,
+    // Quote price
+    quote_origin: origin,
     quote_price: contract.base_price,
     quote_stamp: contract.base_stamp,
-    oracle_pk: contract.oracle_pubkey,
+    // Latest price (same as quote for CRE responses)
+    latest_origin: origin,
+    latest_price: contract.base_price,
+    latest_stamp: contract.base_stamp,
+    // Event price
+    event_origin: isExpired ? origin : null,
+    event_price: isExpired ? contract.base_price : null,
+    event_stamp: isExpired ? contract.base_stamp : null,
+    event_type: isExpired ? 'breach' : 'active',
+    // Threshold commitment
+    thold_hash: contract.thold_hash,
+    thold_key: contract.thold_key,
+    thold_price: contract.thold_price,
+    // State & signatures
+    is_expired: isExpired,
     req_id: contract.commit_hash,
     req_sig: contract.oracle_sig,
-    thold_hash: contract.thold_hash,
-    thold_price: contract.thold_price,
-    is_expired: isExpired,
-    eval_price: isExpired ? contract.base_price : null,
-    eval_stamp: isExpired ? contract.base_stamp : null,
-    thold_key: contract.thold_key,
   };
 }
 
