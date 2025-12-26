@@ -8,6 +8,7 @@ import {
   handleCreate,
   handleWebhook,
   handleHealth,
+  handlePrice,
   handleReadiness,
   handleStatus,
   handleCheck,
@@ -321,6 +322,10 @@ async function main(): Promise<void> {
       logger.error('Quote handler error', { error: (error as Error).message });
       res.status(500).json({ error: 'internal server error' });
     }
+  });
+
+  app.get('/api/price', (req: Request, res: Response) => {
+    handlePrice(req, res, state);
   });
 
   app.post('/webhook/ducat', async (req: Request, res: Response) => {

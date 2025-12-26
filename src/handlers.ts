@@ -655,6 +655,26 @@ export function handleHealth(req: Request, res: Response, state: AppState): void
 }
 
 /**
+ * GET /api/price - Return the latest cached price from oracle
+ */
+export function handlePrice(req: Request, res: Response, state: AppState): void {
+  const cached = state.quoteCache.getPrice();
+
+  if (!cached) {
+    res.status(503).json({
+      error: 'no price available',
+      message: 'price data is stale or not yet received',
+    });
+    return;
+  }
+
+  res.json({
+    USD: cached.basePrice,
+    time: cached.baseStamp,
+  });
+}
+
+/**
  * GET /readiness - Readiness probe
  */
 export async function handleReadiness(req: Request, res: Response, state: AppState): Promise<void> {
