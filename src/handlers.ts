@@ -974,12 +974,83 @@ export function startLiquidationPoller(state: AppState): void {
   }, state.config.liquidationIntervalMs);
 }
 
+// CRE has a 30KB maximum request size limit (including headers and body).
+// Each thold_hash is ~45 bytes (40 hex chars + JSON overhead).
+// With JSON-RPC wrapper overhead (~500 bytes), we can fit ~650 vaults max.
+// Using 500 per batch for safety margin.
+const CRE_BATCH_SIZE = 500;
+
+// Delay between batches to avoid CRE rate limits (429 errors observed at 500ms)
+const CRE_BATCH_DELAY_MS = 10000;
+
 /**
- * Trigger batch evaluate workflow
+ * Trigger batch evaluate workflow with batching to respect CRE 30KB limit
  */
 async function triggerBatchEvaluate(state: AppState, tholdHashes: string[]): Promise<void> {
-  const domain = `liq-batch-${Date.now()}`;
+  if (tholdHashes.length === 0) {
+    return;
+  }
 
+  const totalVaults = tholdHashes.length;
+  const numBatches = Math.ceil(totalVaults / CRE_BATCH_SIZE);
+
+  logger.info('Triggering CRE evaluate for at-risk vaults', {
+    totalVaults,
+    batchSize: CRE_BATCH_SIZE,
+    numBatches,
+  });
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < totalVaults; i += CRE_BATCH_SIZE) {
+    const end = Math.min(i + CRE_BATCH_SIZE, totalVaults);
+    const batch = tholdHashes.slice(i, end);
+    const batchNum = Math.floor(i / CRE_BATCH_SIZE) + 1;
+
+    // Generate a unique domain for this batch
+    const domain = `liq-${Date.now()}-b${batchNum}`;
+
+    try {
+      await triggerSingleBatchEvaluate(state, domain, batch);
+      logger.info('Triggered evaluate workflow batch', {
+        batch: batchNum,
+        batchSize: batch.length,
+        totalBatches: numBatches,
+        domain,
+      });
+      successCount++;
+    } catch (error) {
+      logger.error('Failed to trigger evaluate workflow batch', {
+        batch: batchNum,
+        batchSize: batch.length,
+        totalBatches: numBatches,
+        error: String(error),
+      });
+      errorCount++;
+    }
+
+    // Delay between batches to avoid CRE rate limits
+    if (end < totalVaults) {
+      await new Promise(resolve => setTimeout(resolve, CRE_BATCH_DELAY_MS));
+    }
+  }
+
+  logger.info('Completed triggering evaluate workflow batches', {
+    successfulBatches: successCount,
+    failedBatches: errorCount,
+    totalVaults,
+  });
+}
+
+/**
+ * Trigger a single batch evaluate workflow
+ */
+async function triggerSingleBatchEvaluate(
+  state: AppState,
+  domain: string,
+  tholdHashes: string[]
+): Promise<void> {
   const input = {
     domain,
     thold_hashes: tholdHashes,
@@ -1021,11 +1092,6 @@ async function triggerBatchEvaluate(state: AppState, tholdHashes: string[]): Pro
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`non-success status: ${body}`);
+    throw new Error(`non-success status ${response.status}: ${body}`);
   }
-
-  logger.info('Triggered batch evaluate workflow', {
-    batchSize: tholdHashes.length,
-    domain,
-  });
 }
