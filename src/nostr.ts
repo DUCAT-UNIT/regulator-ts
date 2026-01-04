@@ -80,7 +80,8 @@ export class NostrClient {
 
 /**
  * Calculate commit_hash using BIP-340 tagged hash
- * commit_hash = hash340("DUCAT/commit", oracle_pubkey || chain_network || base_price || base_stamp || thold_price)
+ * commit_hash = hash340("ducat/price_commit_hash", oracle_pubkey || chain_network || base_price || base_stamp || thold_price)
+ * IMPORTANT: Tag must match cre-hmac/crypto/crypto.go TagPriceCommitHash
  */
 export function calculateCommitHash(
   oraclePubkey: string,
@@ -100,7 +101,7 @@ export function calculateCommitHash(
   }
 
   // BIP-340 tagged hash: SHA256(SHA256(tag) || SHA256(tag) || msg)
-  const tag = 'DUCAT/commit';
+  const tag = 'ducat/price_commit_hash';
   const tagHash = createHash('sha256').update(tag).digest();
 
   // Build message: pubkey || network || base_price || base_stamp || thold_price
