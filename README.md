@@ -109,6 +109,14 @@ When the liquidation poller detects at-risk vaults:
 3. 10-second delay between batches prevents rate limiting
 4. Success/failure logged per batch with running totals
 
+### Quote Cache Invalidation
+
+Quotes are cached in memory but **invalidated when the price changes**, not by TTL. This ensures quotes are only valid for the price at which they were created:
+
+- When a webhook arrives with a new price, all cached quotes are cleared
+- CRE cron sends price updates every ~90 seconds
+- Same price = cache preserved, different price = cache cleared
+
 ## Security Features
 
 - **BIP-340 Schnorr Signature Verification**: Uses `@noble/curves` library
